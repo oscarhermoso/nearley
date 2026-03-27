@@ -232,8 +232,8 @@ describe('nearleyc: macros', () => {
         `);
 
         expect(prettyPrint(grammar)).toEqual([
-            'main$macrocall$2$macrocall$2$string$1 → "H" "e" "l" "l" "o" "?"',
-            'main$macrocall$2$macrocall$2 → main$macrocall$2$macrocall$2$string$1',
+            '$string$1 → "H" "e" "l" "l" "o" "?"',
+            'main$macrocall$2$macrocall$2 → $string$1',
             'main$macrocall$2$macrocall$1 → "\'" main$macrocall$2$macrocall$2 "\'"',
             'main$macrocall$2 → main$macrocall$2$macrocall$1',
             'main$macrocall$1 → main$macrocall$2 " " main$macrocall$2 " " main$macrocall$2',
@@ -266,3 +266,83 @@ describe('nearleyc: macros', () => {
     });
 
 })
+
+describe('nearleyc: string literal deduplication', function() {
+    const Compile = require('../lib/compile');
+    const generate = require('../lib/generate');
+    const nearleyModule = require('../lib/nearley');
+
+    // Helper: compile a source string into the internal rules object,
+    // bypassing generate so we can call any generator ourselves.
+    function compileToRules(source) {
+        const ng = nearleyModule.Grammar.fromCompiled(require('../lib/nearley-language-bootstrapped'));
+        const p = new nearleyModule.Parser(ng);
+        p.feed(source);
+        return Compile(p.results[0], {});
+    }
+
+    // Count how many $string$ rule definitions appear in a generated string.
+    function countStringDefs(output) {
+        return (output.match(/"name": "[^"]*\$string\$\d+"/g) || []).length;
+    }
+
+    const REPEATED_LITERALS_GRAMMAR = `
+        main -> a | b | c
+        a -> "hello" | "world"
+        b -> "hello" | "foo"
+        c -> "world" | "foo"
+    `;
+    // 3 unique literals: "hello", "world", "foo"
+    // start rule is "main" so all three literals are reachable
+
+    it('emits each unique string literal helper rule only once (JS)', function() {
+        const source = nearleyc(REPEATED_LITERALS_GRAMMAR);
+        // Before fix: 6 definitions (each literal compiled once per parent rule)
+        // After fix:  3 definitions (one canonical rule per unique literal)
+        expect(countStringDefs(source)).toBe(3);
+    });
+
+    it('deduplicated JS output still parses correctly', function() {
+        const grammar = compile(REPEATED_LITERALS_GRAMMAR);
+        // Grammar is intentionally ambiguous (literals shared across rules);
+        // verify each literal produces at least one valid parse.
+        expect(parse(grammar, 'hello').length > 0).toBe(true);
+        expect(parse(grammar, 'world').length > 0).toBe(true);
+        expect(parse(grammar, 'foo').length > 0).toBe(true);
+    });
+
+    it('emits each unique string literal helper rule only once (TypeScript)', function() {
+        const c = compileToRules(REPEATED_LITERALS_GRAMMAR);
+        const output = generate.typescript(c, 'grammar');
+        expect(countStringDefs(output)).toBe(3);
+    });
+
+    it('emits each unique string literal helper rule only once (CoffeeScript)', function() {
+        const c = compileToRules(REPEATED_LITERALS_GRAMMAR);
+        const output = generate.coffeescript(c, 'grammar');
+        expect(countStringDefs(output)).toBe(3);
+    });
+
+    it('emits each unique string literal helper rule only once (ES module)', function() {
+        const c = compileToRules(REPEATED_LITERALS_GRAMMAR);
+        const output = generate.module(c, 'grammar');
+        expect(countStringDefs(output)).toBe(3);
+    });
+
+    it('shared string literal rules use neutral $string$N names in error messages', function() {
+        // Before the fix, "hello" used first by rule 'a' would appear as
+        // 'a$string$1' in error traces for rule 'b', which was confusing.
+        // After the fix, both rules reference '$string$1' — clearly internal,
+        // and no user rule name is used as the prefix.
+        const grammar = compile(REPEATED_LITERALS_GRAMMAR);
+        try {
+            parse(grammar, 'xyz');
+            throw new Error('should have thrown');
+        } catch (e) {
+            // Verify no user-rule-prefixed string helper appears (e.g. 'a$string$1')
+            expect(/[a-z]\$string\$/.test(e.message)).toBe(false);
+            // Verify neutral names DO appear
+            expect(/\$string\$\d+/.test(e.message)).toBe(true);
+        }
+    });
+});

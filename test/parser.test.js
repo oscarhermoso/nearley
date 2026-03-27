@@ -78,8 +78,8 @@ describe('Parser: API', function() {
             "",
             "Unexpected \"d\". I did not expect any more input. Here is the state of my parse table:",
             "",
-            "    input$string$1 → \"a\" \"b\" \"c\" ● ",
-            "    input → input$string$1 ● ",
+            "    $string$1 → \"a\" \"b\" \"c\" ● ",
+            "    input → $string$1 ● ",
             ""
         ].join("\n");
         expect(() => parse(grammar, "abcd")).toThrow(expectedError);
